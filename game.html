@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Проигрыватель уровня (Test Mode)</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: 'Segoe UI', sans-serif;
+    }
+    /* Поле загрузки файла */
+    #fileInput {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 100;
+      font-size: 16px;
+      padding: 5px;
+    }
+    /* Кнопка респауна */
+    #respawnButton {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      z-index: 100;
+      padding: 10px 15px;
+      font-size: 16px;
+      background: #222;
+      color: #fff;
+      border: 1px solid #666;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    /* Анимированная иконка результата */
+    #resultIcon {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%) scale(0);
+      z-index: 200;
+      font-size: 80px;
+      color: gold;
+      text-shadow: 0 0 20px rgba(255,255,255,0.8);
+    }
+    @keyframes resultAnim {
+      0% { transform: translate(-50%, -50%) scale(0); opacity: 0; }
+      50% { transform: translate(-50%, -50%) scale(1.5); opacity: 1; }
+      100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+    }
+    #resultIcon.show {
+      animation: resultAnim 1s forwards;
+    }
+    /* Canvas — занимает всю страницу */
+    #gameCanvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: black;
+    }
+  </style>
+</head>
+<body>
+  <!-- Поле загрузки уровня (JSON) и кнопка респауна -->
+  <input type="file" id="fileInput" accept=".json">
+  <button id="respawnButton">Респаун</button>
+  <canvas id="gameCanvas" tabindex="0"></canvas>
+  <div id="resultIcon"></div>
+  
+  <script>
+    /********** Инициализация и Глобальные Переменные **********/
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const fileInput = document.getElementById('fileInput');
+    const respawnButton = document.getElementById('respawnButton');
+    const resultIcon = document.getElementById('resultIcon');
+    const gridSize = 40;
+    
+    // Чтобы события клавиатуры работали – задаем tabindex и устанавливаем фокус
+    canvas.setAttribute("tabindex", "0");
+    canvas.focus();
+    
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+    
+    // Глобальные переменные уровня
+    let blocks = [];       // Загруженные блоки уровня
+    let spawnPoint = null; // Точка появления
+    let finishPoint = null;// Точка финиша
+    let gameEnded = false;
+    let endMessage = "";
+    let isPlayMode = false; // Режим тестирования активируется после загрузки файла
+    
+    // Игрок (куб). Изначально вне видимой области.
+    const player = {
+      x: -100,
+      y: -100,
+      size: 45,  // исходный размер
+      vx: 0,
+      vy: 0,
+      // Для тестового режима гравитация меняется по стрелкам
+      gravityX: 0,
+      gravityY: 0.2,
+      color: 'deepskyblue'
+    };
+    
+    /********** Управление клавиатурой (как в тестовом режиме) **********/
+    window.addEventListener('keydown', e => {
+      if (!isPlayMode) return;
+      switch (e.key) {
+        case 'ArrowUp':
+          player.gravityX = 0;
+          player.gravityY = -0.2;
+          break;
+        case 'ArrowDown':
+          player.gravityX = 0;
+          player.gravityY = 0.2;
+          break;
+        case 'ArrowLeft':
+          player.gravityX = -0.2;
+          player.gravityY = 0;
+          break;
+        case 'ArrowRight':
+          player.gravityX = 0.2;
+          player.gravityY = 0;
+          break;
+      }
+    });
+    // Если не требуется сбрасывать гравитацию при отпускании – можно не добавлять keyup.
+    // Если нужно, можно добавить:
+    window.addEventListener('keyup', e => {
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
+        // Не сбрасываем мгновенно, чтобы движение продолжалось до изменения направления
+        // Если хочется сразу остановиться, раскомментируйте следующие строки:
+        // player.gravityX = 0;
+        // player.gravityY = 0;
+      }
+    });
+    
+    /********** Функции для управления уровнем и игроком **********/
+    
+    // Функция сброса игрока (Респаун)
+    function resetPlayer() {
+      if (spawnPoint) {
+        player.size = 45; // сбрасываем размер до исходного
+        player.x = spawnPoint.x + gridSize / 2 - player.size / 2;
+        player.y = spawnPoint.y + gridSize / 2 - player.size / 2;
+        player.vx = 0;
+        player.vy = 0;
+      }
+      gameEnded = false;
+      endMessage = "";
+      resultIcon.classList.remove('show');
+      canvas.focus();
+      console.log("Respawn: player reset");
+    }
+    
+    // Функция завершения игры (победа/поражение)
+    function endGame(status) {
+      if (gameEnded) return;
+      gameEnded = true;
+      if (status === 'win') {
+        endMessage = "Победа!";
+      } else if (status === 'lose') {
+        endMessage = "Поражение!";
+      }
+      resultIcon.innerHTML = endMessage;
+      resultIcon.classList.add('show');
+    }
+    
+    // При загрузке файла JSON уровень загружается и тестовый режим запускается автоматически
+    fileInput.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(ev) {
+        try {
+          const data = JSON.parse(ev.target.result);
+          blocks = data.blocks || [];
+          spawnPoint = data.spawn;
+          finishPoint = data.finish;
+          // После загрузки куб остается вне экрана до респауна, затем запускается тестовый режим
+          player.x = -100;
+          player.y = -100;
+          gameEnded = false;
+          endMessage = "";
+          resultIcon.classList.remove('show');
+          isPlayMode = true;
+          resetPlayer();
+          console.log("Level loaded and game started.");
+        } catch (err) {
+          alert("Ошибка загрузки уровня: " + err.message);
+        }
+      };
+      reader.readAsText(file);
+    });
+    
+    // Кнопка респауна
+    respawnButton.addEventListener('click', resetPlayer);
+    
+    /********** Фон: звёзды **********/
+    const stars = Array.from({ length: 300 }).map(() => ({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      radius: Math.random() * 1.5 + 0.5,
+      alpha: Math.random() * 0.5 + 0.5,
+      dx: (Math.random() - 0.5) * 0.2,
+      dy: (Math.random() - 0.5) * 0.2
+    }));
+    function updateStars() {
+      stars.forEach(star => {
+        star.x += star.dx;
+        star.y += star.dy;
+        if (star.x < 0) star.x = canvas.width;
+        if (star.x > canvas.width) star.x = 0;
+        if (star.y < 0) star.y = canvas.height;
+        if (star.y > canvas.height) star.y = 0;
+      });
+    }
+    
+    /********** Функция отрисовки частиц для зон shrink/grow **********/
+    function updateAndDrawParticles(block) {
+      if (!block.particles) {
+        block.particles = [];
+        const numParticles = 50;
+        for (let i = 0; i < numParticles; i++) {
+          let p = {
+            x: Math.random() * block.w,
+            y: Math.random() * block.h,
+            vx: (Math.random() - 0.5) * 1.0,
+            vy: (Math.random() - 0.5) * 1.0,
+            size: Math.random() * 10 + 15, // от 15 до 25 пикселей
+            life: Math.random() * 200 + 100
+          };
+          p.maxLife = p.life;
+          if (block.type === "shrink") {
+            const purpleSet = ["#BA55D3", "#9400D3", "#8A2BE2", "#9932CC"];
+            p.color = purpleSet[Math.floor(Math.random() * purpleSet.length)];
+            p.arrow = "↓";
+          } else if (block.type === "grow") {
+            const orangeSet = ["#FFA500", "#FF8C00", "#FFD700", "#FFB347"];
+            p.color = orangeSet[Math.floor(Math.random() * orangeSet.length)];
+            p.arrow = "↑";
+          }
+          block.particles.push(p);
+        }
+      }
+      for (const p of block.particles) {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life--;
+        if (p.life <= 0) {
+          p.x = Math.random() * block.w;
+          p.y = Math.random() * block.h;
+          p.vx = (Math.random() - 0.5) * 1.0;
+          p.vy = (Math.random() - 0.5) * 1.0;
+          p.size = Math.random() * 10 + 15;
+          p.life = Math.random() * 200 + 100;
+          p.maxLife = p.life;
+          if (block.type === "shrink") {
+            const purpleSet = ["#BA55D3", "#9400D3", "#8A2BE2", "#9932CC"];
+            p.color = purpleSet[Math.floor(Math.random() * purpleSet.length)];
+            p.arrow = "↓";
+          } else if (block.type === "grow") {
+            const orangeSet = ["#FFA500", "#FF8C00", "#FFD700", "#FFB347"];
+            p.color = orangeSet[Math.floor(Math.random() * orangeSet.length)];
+            p.arrow = "↑";
+          }
+        }
+        if (p.x < 0) p.x = block.w;
+        if (p.x > block.w) p.x = 0;
+        if (p.y < 0) p.y = block.h;
+        if (p.y > block.h) p.y = 0;
+        ctx.font = p.size + "px Segoe UI";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = p.color;
+        ctx.fillText(p.arrow, block.x + p.x, block.y + p.y);
+      }
+    }
+    
+    /********** Функция разрешения коллизий игрока с блоками типа "wall" **********/
+    function resolvePlayerCollisions() {
+      let iterations = 0;
+      const maxIterations = 10;
+      while (iterations < maxIterations) {
+        let collisionFound = false;
+        let mtv = { x: 0, y: 0, overlap: Infinity };
+        for (const b of blocks) {
+          if (b.type !== 'wall') continue;
+          if (player.x < b.x + b.w &&
+              player.x + player.size > b.x &&
+              player.y < b.y + b.h &&
+              player.y + player.size > b.y) {
+            let overlapX = (player.x + player.size/2 < b.x + b.w/2)
+              ? (player.x + player.size) - b.x
+              : (b.x + b.w) - player.x;
+            let overlapY = (player.y + player.size/2 < b.y + b.h/2)
+              ? (player.y + player.size) - b.y
+              : (b.y + b.h) - player.y;
+            let overlap = Math.min(overlapX, overlapY);
+            if (overlap < mtv.overlap) {
+              mtv.overlap = overlap;
+              if (overlapX < overlapY) {
+                mtv.x = (player.x + player.size/2 < b.x + b.w/2) ? -overlap : overlap;
+                mtv.y = 0;
+              } else {
+                mtv.x = 0;
+                mtv.y = (player.y + player.size/2 < b.y + b.h/2) ? -overlap : overlap;
+              }
+              collisionFound = true;
+            }
+          }
+        }
+        if (!collisionFound) break;
+        player.x += mtv.x;
+        player.y += mtv.y;
+        iterations++;
+      }
+    }
+    
+    /********** Основной игровой цикл **********/
+    function update() {
+      updateStars();
+      
+      if (isPlayMode && !gameEnded) {
+        // Физика тестового режима: скорость обновляется с добавлением гравитации
+        player.vx += player.gravityX;
+        player.vy += player.gravityY;
+        player.x += player.vx;
+        player.y += player.vy;
+        resolvePlayerCollisions();
+        
+        // Обработка зон изменения размера
+        for (const b of blocks) {
+          if (b.type === 'shrink' &&
+              player.x + player.size > b.x &&
+              player.x < b.x + b.w &&
+              player.y + player.size > b.y &&
+              player.y < b.y + b.h) {
+            player.size = Math.floor(gridSize * 0.8);
+          } else if (b.type === 'grow' &&
+                     player.x + player.size > b.x &&
+                     player.x < b.x + b.w &&
+                     player.y + player.size > b.y &&
+                     player.y < b.y + b.h) {
+            player.size = gridSize * 2;
+          }
+        }
+        
+        // Проверка столкновений с запрещёнными блоками (ban)
+        for (const b of blocks) {
+          if (b.type === 'ban' &&
+              player.x + player.size > b.x &&
+              player.x < b.x + b.w &&
+              player.y + player.size > b.y &&
+              player.y < b.y + b.h) {
+            endGame('lose');
+            break;
+          }
+        }
+        // Проверка достижения финиша
+        if (finishPoint &&
+            player.x + player.size > finishPoint.x &&
+            player.x < finishPoint.x + finishPoint.w &&
+            player.y + player.size > finishPoint.y &&
+            player.y < finishPoint.y + finishPoint.h) {
+          endGame('win');
+        }
+      }
+    }
+    
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Фон: звёзды
+      stars.forEach(star => {
+        ctx.save();
+        ctx.globalAlpha = star.alpha;
+        ctx.fillStyle = "white";
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = "white";
+        ctx.beginPath();
+        ctx.arc(star.x, star.y, star.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      });
+      
+      // (Опционально) рисуем сетку
+      if (!isPlayMode) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+        for (let x = 0; x < canvas.width; x += gridSize) {
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, canvas.height);
+          ctx.stroke();
+        }
+        for (let y = 0; y < canvas.height; y += gridSize) {
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(canvas.width, y);
+          ctx.stroke();
+        }
+      }
+      
+      // Рисуем блоки уровня
+      for (const b of blocks) {
+        if (b.type === 'shrink' || b.type === 'grow') {
+          updateAndDrawParticles(b);
+          continue;
+        }
+        ctx.save();
+        if (b.type === 'ban') {
+          const pulsate = 20 + 5 * Math.sin(Date.now() / 200);
+          ctx.fillStyle = '#aa0000';
+          ctx.shadowBlur = pulsate;
+          ctx.shadowColor = '#ff3333';
+        } else {
+          ctx.fillStyle = { wall: '#555' }[b.type] || '#888';
+          ctx.shadowBlur = 0;
+        }
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+        ctx.restore();
+      }
+      
+      // Рисуем spawn
+      if (spawnPoint) {
+        ctx.save();
+        ctx.fillStyle = "lime";
+        ctx.font = "40px Segoe UI";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("◈", spawnPoint.x + gridSize/2, spawnPoint.y + gridSize/2);
+        ctx.restore();
+      }
+      
+      // Рисуем finish
+      if (finishPoint) {
+        ctx.save();
+        ctx.fillStyle = "white";
+        ctx.font = "38px Segoe UI";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("✔", finishPoint.x + gridSize/2, finishPoint.y + gridSize/2);
+        ctx.restore();
+      }
+      
+      // Рисуем игрок (куб)
+      if (isPlayMode) {
+        ctx.save();
+        ctx.fillStyle = player.color;
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = player.color;
+        ctx.fillRect(player.x, player.y, player.size, player.size);
+        ctx.restore();
+      }
+      
+      // Если игра завершена, показываем результат
+      if (gameEnded && endMessage) {
+        ctx.save();
+        ctx.fillStyle = "white";
+        ctx.font = "60px Segoe UI";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(endMessage, canvas.width/2, canvas.height/2);
+        ctx.restore();
+      }
+    }
+    
+    function gameLoop(){
+      update();
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+    gameLoop();
+    
+    /********** Дополнительные кнопки (если нужны для проверки) **********/
+    // Если требуется, можно оставить кнопки "Тестировать" и "Остановить"
+    // Они не обязательны, поскольку режим запускается автоматически после загрузки файла
+    document.getElementById('btn-play')?.addEventListener('click', () => {
+      if (!spawnPoint || !finishPoint) return;
+      isPlayMode = true;
+      document.getElementById('btn-play').style.display = 'none';
+      document.getElementById('btn-stop').style.display = 'inline-block';
+      player.vx = 0;
+      player.vy = 0;
+      player.x = spawnPoint.x + gridSize/2 - player.size/2;
+      player.y = spawnPoint.y + gridSize/2 - player.size/2;
+      canvas.focus();
+    });
+    
+    document.getElementById('btn-stop')?.addEventListener('click', () => {
+      isPlayMode = false;
+      document.getElementById('btn-stop').style.display = 'none';
+      document.getElementById('btn-play').style.display = 'inline-block';
+      player.vx = 0;
+      player.vy = 0;
+      if (spawnPoint) {
+        player.x = spawnPoint.x + gridSize/2 - player.size/2;
+        player.y = spawnPoint.y + gridSize/2 - player.size/2;
+      }
+      gameEnded = false;
+      endMessage = "";
+    });
+  </script>
+</body>
+</html>

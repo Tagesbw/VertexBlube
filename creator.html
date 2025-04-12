@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Редактор уровней с режимом тестирования</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: 'Segoe UI', sans-serif;
+    }
+    #toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      background: #333;
+      padding: 5px 10px;
+      gap: 10px;
+    }
+    .tool-btn {
+      width: 32px;
+      height: 32px;
+      background: #222;
+      border: 2px solid #666;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      color: white;
+      font-weight: bold;
+    }
+    .tool-btn.active {
+      border-color: yellow;
+    }
+    .main-btn {
+      padding: 6px 14px;
+      background: #222;
+      color: white;
+      border: 1px solid #666;
+      border-radius: 6px;
+      font-size: 16px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.2s ease;
+    }
+    .main-btn:hover {
+      background: #444;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: calc(100% - 45px);
+      background: black;
+    }
+  </style>
+</head>
+<body>
+
+<!-- Панель инструментов: оставляем только необходимые инструменты -->
+<div id="toolbar">
+  <button class="main-btn" id="btn-play">▶ Тестировать</button>
+  <button class="main-btn" id="btn-stop" style="display: none;">■ Остановить</button>
+  
+  <div class="tool-btn" data-type="wall" title="Стена" style="background:#555;"></div>
+  <div class="tool-btn" data-type="ban" title="Запрещено" style="background:red;"></div>
+  <div class="tool-btn" data-type="spawn" title="Появление" style="background:white; color:black;">◈</div>
+  <div class="tool-btn" data-type="finish" title="Финиш" style="background:lime; color:black;">✔</div>
+  
+  <!-- Новые инструменты для изменения размера -->
+  <div class="tool-btn" data-type="shrink" title="Уменьшающие" style="background:purple;">S</div>
+  <div class="tool-btn" data-type="grow" title="Увеличивающие" style="background:orange;">G</div>
+  
+  <button class="main-btn" id="btn-save">💾 Скачать</button>
+</div>
+
+<canvas id="editorCanvas"></canvas>
+
+<script>
+  const canvas = document.getElementById('editorCanvas');
+  const ctx = canvas.getContext('2d');
+  const gridSize = 40; // Размер клетки
+
+  const btnPlay = document.getElementById('btn-play');
+  const btnStop = document.getElementById('btn-stop');
+
+  const player = {
+    x: 75,
+    y: 75,
+    size: 45,
+    vx: 0,
+    vy: 0,
+    gravityX: 0,
+    gravityY: 0.2,
+    color: 'deepskyblue'
+  };
+
+  let isPlayMode = false;
+  let gameEnded = false;  // Флаг завершения игры
+  let endMessage = "";    // Итоговое сообщение
+  let blocks = [];
+  let spawnPoint = null;
+  let finishPoint = null;
+  let currentMouseX = 0, currentMouseY = 0;
+  let isDragging = false; // Рисование блока левой кнопкой
+  let startX = 0, startY = 0;
+  let selectedType = 'wall';
+
+  // Переменные для выделения правой кнопкой (удаление блоков)
+  let isRightDragging = false;
+  let startRightX = 0, startRightY = 0;
+  let currentRightX = 0, currentRightY = 0;
+
+  // Функция остановки тестового режима
+  function stopTestMode() {
+    isPlayMode = false;
+    btnStop.style.display = 'none';
+    btnPlay.style.display = 'inline-block';
+    player.vx = 0;
+    player.vy = 0;
+    player.gravityX = 0;
+    player.gravityY = 0.2;
+    if (spawnPoint) {
+      player.x = spawnPoint.x + gridSize / 2 - player.size / 2;
+      player.y = spawnPoint.y + gridSize / 2 - player.size / 2;
+    }
+    gameEnded = false;
+    endMessage = "";
+  }
+
+  // Функция завершения игры (без всплывающих окон)
+  function endGame(status) {
+    if (gameEnded) return;
+    gameEnded = true;
+    stopTestMode();
+    if (status === 'win') {
+      endMessage = "Победа!";
+    } else if (status === 'lose') {
+      endMessage = "Поражение!";
+    }
+  }
+
+  // Подгонка размеров канваса
+  function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight - document.getElementById('toolbar').offsetHeight;
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  // Генерация звездного неба
+  const stars = Array.from({ length: 300 }).map(() => ({
+    x: Math.random() * canvas.width,
+    y: Math.random() * canvas.height,
+    radius: Math.random() * 1.5 + 0.5,
+    alpha: Math.random() * 0.5 + 0.5,
+    dx: (Math.random() - 0.5) * 0.2,
+    dy: (Math.random() - 0.5) * 0.2
+  }));
+
+  // Обработчик кликов по инструментам
+  document.querySelectorAll('.tool-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      selectedType = btn.dataset.type;
+    });
+  });
+
+  // Обработка событий мыши на канвасе
+  canvas.addEventListener('mousedown', (e) => {
+    if (isPlayMode) return;
+    const x = Math.floor(e.offsetX / gridSize) * gridSize;
+    const y = Math.floor(e.offsetY / gridSize) * gridSize;
+
+    // Левый клик – создание блока или установка spawn/finish
+    if (e.button === 0) {
+      if (selectedType === 'spawn') {
+        spawnPoint = { x, y, w: gridSize, h: gridSize };
+        return;
+      }
+      if (selectedType === 'finish') {
+        finishPoint = { x, y, w: gridSize, h: gridSize };
+        return;
+      }
+      startX = x;
+      startY = y;
+      isDragging = true;
+    }
+    // Правый клик – начало выделения для удаления блоков
+    else if (e.button === 2) {
+      e.preventDefault();
+      startRightX = x;
+      startRightY = y;
+      isRightDragging = true;
+    }
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    currentMouseX = e.offsetX;
+    currentMouseY = e.offsetY;
+    if (isRightDragging) {
+      currentRightX = Math.floor(e.offsetX / gridSize) * gridSize;
+      currentRightY = Math.floor(e.offsetY / gridSize) * gridSize;
+    }
+  });
+
+  canvas.addEventListener('mouseup', (e) => {
+    // Левый клик завершает рисование блока
+    if (e.button === 0 && isDragging && !isPlayMode && selectedType !== 'spawn' && selectedType !== 'finish') {
+      isDragging = false;
+      const endX = Math.ceil(e.offsetX / gridSize) * gridSize;
+      const endY = Math.ceil(e.offsetY / gridSize) * gridSize;
+      const x = Math.min(startX, endX);
+      const y = Math.min(startY, endY);
+      const w = Math.abs(endX - startX);
+      const h = Math.abs(endY - startY);
+      if (w > 0 && h > 0) {
+        blocks.push({ x, y, w, h, type: selectedType });
+      }
+    }
+    // Правый клик завершает выделение для удаления блоков
+    else if (e.button === 2 && isRightDragging && !isPlayMode) {
+      isRightDragging = false;
+      const endX = Math.ceil(e.offsetX / gridSize) * gridSize;
+      const endY = Math.ceil(e.offsetY / gridSize) * gridSize;
+      const selX = Math.min(startRightX, endX);
+      const selY = Math.min(startRightY, endY);
+      const selW = Math.abs(endX - startRightX);
+      const selH = Math.abs(endY - startRightY);
+      blocks = blocks.filter(b => {
+        const intersect = selX < b.x + b.w &&
+                          selX + selW > b.x &&
+                          selY < b.y + b.h &&
+                          selY + selH > b.y;
+        return !intersect;
+      });
+    }
+  });
+
+  // Предотвращаем стандартное контекстное меню на ПКМ
+  canvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+  });
+
+  // Управление гравитацией игрока клавишами
+  window.addEventListener('keydown', e => {
+    if (!isPlayMode) return;
+    switch (e.key) {
+      case 'ArrowUp':    player.gravityX = 0;    player.gravityY = -0.2;   break;
+      case 'ArrowDown':  player.gravityX = 0;    player.gravityY =  0.2;   break;
+      case 'ArrowLeft':  player.gravityX = -0.2; player.gravityY =  0;     break;
+      case 'ArrowRight': player.gravityX =  0.2; player.gravityY =  0;     break;
+    }
+  });
+
+  // Функция обновления и отрисовки частиц для зон shrink/grow
+  // Частицы представляют стрелочки с размерами от 15 до 25 пикселей, выбирающие случайный цвет и символ
+  function updateAndDrawParticles(block) {
+    if (!block.particles) {
+      block.particles = [];
+      const numParticles = 50; // фиксированное число частиц
+      for (let i = 0; i < numParticles; i++) {
+        let p = {
+          x: Math.random() * block.w,
+          y: Math.random() * block.h,
+          vx: (Math.random() - 0.5) * 1.0,
+          vy: (Math.random() - 0.5) * 1.0,
+          size: Math.random() * 10 + 15, // от 15 до 25 пикселей
+          life: Math.random() * 200 + 100
+        };
+        p.maxLife = p.life;
+        if (block.type === "shrink") {
+          const purpleSet = ["#BA55D3", "#9400D3", "#8A2BE2", "#9932CC"];
+          p.color = purpleSet[Math.floor(Math.random() * purpleSet.length)];
+          p.arrow = "↓";
+        } else if (block.type === "grow") {
+          const orangeSet = ["#FFA500", "#FF8C00", "#FFD700", "#FFB347"];
+          p.color = orangeSet[Math.floor(Math.random() * orangeSet.length)];
+          p.arrow = "↑";
+        }
+        block.particles.push(p);
+      }
+    }
+    for (const p of block.particles) {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.life--;
+      if (p.life <= 0) {
+        p.x = Math.random() * block.w;
+        p.y = Math.random() * block.h;
+        p.vx = (Math.random() - 0.5) * 1.0;
+        p.vy = (Math.random() - 0.5) * 1.0;
+        p.size = Math.random() * 10 + 15;
+        p.life = Math.random() * 200 + 100;
+        p.maxLife = p.life;
+        if (block.type === "shrink") {
+          const purpleSet = ["#BA55D3", "#9400D3", "#8A2BE2", "#9932CC"];
+          p.color = purpleSet[Math.floor(Math.random() * purpleSet.length)];
+          p.arrow = "↓";
+        } else if (block.type === "grow") {
+          const orangeSet = ["#FFA500", "#FF8C00", "#FFD700", "#FFB347"];
+          p.color = orangeSet[Math.floor(Math.random() * orangeSet.length)];
+          p.arrow = "↑";
+        }
+      }
+      if (p.x < 0) p.x = block.w;
+      if (p.x > block.w) p.x = 0;
+      if (p.y < 0) p.y = block.h;
+      if (p.y > block.h) p.y = 0;
+      // Здесь можно добавить alpha, если потребуется, но для яркости цвета оставляем его как есть
+      ctx.beginPath();
+      ctx.font = p.size + "px Segoe UI";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = p.color;
+      ctx.fillText(p.arrow, block.x + p.x, block.y + p.y);
+    }
+  }
+
+  // Функция разрешения коллизий игрока с блоками типа "wall"
+  function resolvePlayerCollisions() {
+    let iterations = 0;
+    const maxIterations = 10;
+    while (iterations < maxIterations) {
+      let collisionFound = false;
+      let mtv = { x: 0, y: 0, overlap: Infinity };
+      for (const b of blocks) {
+        if (b.type !== 'wall') continue;
+        if (player.x < b.x + b.w &&
+            player.x + player.size > b.x &&
+            player.y < b.y + b.h &&
+            player.y + player.size > b.y) {
+          let overlapX = (player.x + player.size/2 < b.x + b.w/2)
+                         ? (player.x + player.size) - b.x
+                         : (b.x + b.w) - player.x;
+          let overlapY = (player.y + player.size/2 < b.y + b.h/2)
+                         ? (player.y + player.size) - b.y
+                         : (b.y + b.h) - player.y;
+          let overlap = Math.min(overlapX, overlapY);
+          if (overlap < mtv.overlap) {
+            mtv.overlap = overlap;
+            if (overlapX < overlapY) {
+              mtv.x = (player.x + player.size/2 < b.x + b.w/2) ? -overlap : overlap;
+              mtv.y = 0;
+            } else {
+              mtv.x = 0;
+              mtv.y = (player.y + player.size/2 < b.y + b.h/2) ? -overlap : overlap;
+            }
+            collisionFound = true;
+          }
+        }
+      }
+      if (!collisionFound) break;
+      player.x += mtv.x;
+      player.y += mtv.y;
+      iterations++;
+    }
+  }
+
+  // Основной цикл отрисовки и логики
+  function drawBlocks() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Рисуем звёзды
+    stars.forEach(star => {
+      ctx.save();
+      ctx.globalAlpha = star.alpha;
+      ctx.fillStyle = "white";
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = "white";
+      ctx.beginPath();
+      ctx.arc(star.x, star.y, star.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      star.x += star.dx;
+      star.y += star.dy;
+      if (star.x < 0) star.x = canvas.width;
+      if (star.x > canvas.width) star.x = 0;
+      if (star.y < 0) star.y = canvas.height;
+      if (star.y > canvas.height) star.y = 0;
+    });
+
+    // Рисуем сетку (если не в тестовом режиме)
+    if (!isPlayMode) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+      for (let x = 0; x < canvas.width; x += gridSize) {
+        ctx.beginPath(); 
+        ctx.moveTo(x, 0); 
+        ctx.lineTo(x, canvas.height); 
+        ctx.stroke();
+      }
+      for (let y = 0; y < canvas.height; y += gridSize) {
+        ctx.beginPath(); 
+        ctx.moveTo(0, y); 
+        ctx.lineTo(canvas.width, y); 
+        ctx.stroke();
+      }
+    }
+
+    // Рисуем блоки
+    for (const b of blocks) {
+      if (b.type === 'shrink' || b.type === 'grow') {
+        updateAndDrawParticles(b);
+        continue;
+      }
+      ctx.save();
+      if (b.type === 'ban') {
+        const pulsate = 20 + 5 * Math.sin(Date.now() / 200);
+        ctx.fillStyle = '#aa0000';
+        ctx.shadowBlur = pulsate;
+        ctx.shadowColor = '#ff3333';
+      } else {
+        ctx.fillStyle = {
+          wall: '#555'
+        }[b.type] || '#888';
+        ctx.shadowBlur = 0;
+      }
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      ctx.restore();
+    }
+
+    // Рисуем spawn
+    if (spawnPoint) {
+      ctx.save();
+      ctx.fillStyle = "lime";
+      ctx.font = "40px Segoe UI";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("◈", spawnPoint.x + gridSize / 2, spawnPoint.y + gridSize / 2);
+      ctx.restore();
+    }
+
+    // Рисуем finish
+    if (finishPoint) {
+      ctx.save();
+      ctx.fillStyle = "white";
+      ctx.font = "38px Segoe UI";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("✔", finishPoint.x + gridSize / 2, finishPoint.y + gridSize / 2);
+      ctx.restore();
+    }
+
+    // Рисуем выделение для создания блока (левый клик)
+    if (isDragging && !isPlayMode && selectedType !== 'spawn' && selectedType !== 'finish') {
+      const endX = Math.ceil(currentMouseX / gridSize) * gridSize;
+      const endY = Math.ceil(currentMouseY / gridSize) * gridSize;
+      const x = Math.min(startX, endX);
+      const y = Math.min(startY, endY);
+      const w = Math.abs(endX - startX);
+      const h = Math.abs(endY - startY);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+      ctx.setLineDash([6, 4]);
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, w, h);
+      ctx.restore();
+    }
+
+    // Рисуем выделение для удаления блоков (ПКМ)
+    if (isRightDragging && !isPlayMode) {
+      const endX = Math.ceil(currentRightX / gridSize) * gridSize;
+      const endY = Math.ceil(currentRightY / gridSize) * gridSize;
+      const x = Math.min(startRightX, endX);
+      const y = Math.min(startRightY, endY);
+      const w = Math.abs(endX - startRightX);
+      const h = Math.abs(endY - startRightY);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,0,0,0.8)';
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, w, h);
+      ctx.restore();
+    }
+
+    // Игровая логика (режим тестирования)
+    if (isPlayMode) {
+      if (!gameEnded) {
+        player.vx += player.gravityX;
+        player.vy += player.gravityY;
+        player.x += player.vx;
+        player.y += player.vy;
+        // Проверка столкновения с обычными стенами (тип "wall")
+        let blocked = false;
+        for (const b of blocks) {
+          if (b.type === 'wall') {
+            const collides = player.x < b.x + b.w && (player.x + player.size) > b.x &&
+                             player.y < b.y + b.h && (player.y + player.size) > b.y;
+            if (collides) {
+              blocked = true;
+              break;
+            }
+          }
+        }
+        if (blocked) {
+          player.x -= player.vx;
+          player.y -= player.vy;
+          player.vx = 0;
+          player.vy = 0;
+        }
+        // Проверка зон изменения размера
+        for (const b of blocks) {
+          if (b.type === 'shrink' &&
+              player.x + player.size > b.x &&
+              player.x < b.x + b.w &&
+              player.y + player.size > b.y &&
+              player.y < b.y + b.h) {
+            // Устанавливаем размер меньше, чтобы кубик проходил через узкие проходы
+            player.size = Math.floor(gridSize * 0.8);
+          } else if (b.type === 'grow' &&
+              player.x + player.size > b.x &&
+              player.x < b.x + b.w &&
+              player.y + player.size > b.y &&
+              player.y < b.y + b.h) {
+            player.size = gridSize * 2;
+          }
+        }
+        // Проверка столкновения с запрещёнными блоками (ban) – поражение
+        for (const b of blocks) {
+          if (b.type === 'ban' &&
+              player.x + player.size > b.x &&
+              player.x < b.x + b.w &&
+              player.y + player.size > b.y &&
+              player.y < b.y + b.h) {
+            endGame('lose');
+            break;
+          }
+        }
+        // Проверка достижения финиша
+        if (finishPoint &&
+            player.x + player.size > finishPoint.x &&
+            player.x < finishPoint.x + finishPoint.w &&
+            player.y + player.size > finishPoint.y &&
+            player.y < finishPoint.y + finishPoint.h) {
+          endGame('win');
+        }
+      }
+      ctx.save();
+      ctx.fillStyle = player.color;
+      ctx.shadowBlur = 15;
+      ctx.shadowColor = player.color;
+      ctx.fillRect(player.x, player.y, player.size, player.size);
+      ctx.restore();
+    }
+
+    // Если игра завершена, отображаем сообщение
+    if (gameEnded && endMessage) {
+      ctx.save();
+      ctx.fillStyle = "white";
+      ctx.font = "60px Segoe UI";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(endMessage, canvas.width / 2, canvas.height / 2);
+      ctx.restore();
+    }
+
+    requestAnimationFrame(drawBlocks);
+  }
+  drawBlocks();
+
+  // Сохранение уровня в JSON (частицы не сохраняются)
+  document.getElementById('btn-save').addEventListener('click', () => {
+    const cleanBlocks = blocks.map(b => {
+      if (b.type === 'shrink' || b.type === 'grow') {
+        const {particles, ...cleanBlock} = b;
+        return cleanBlock;
+      }
+      return b;
+    });
+    const data = {
+      blocks: cleanBlocks,
+      spawn: spawnPoint,
+      finish: finishPoint
+    };
+    const dataStr = JSON.stringify(data, null, 2);
+    const blob = new Blob([dataStr], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "level.json";
+    a.click();
+  });
+
+  // Запуск тестового режима
+  btnPlay.addEventListener('click', () => {
+    if (!spawnPoint || !finishPoint) {
+      return;
+    }
+    isPlayMode = true;
+    btnPlay.style.display = 'none';
+    btnStop.style.display = 'inline-block';
+    player.x = spawnPoint.x + gridSize / 2 - player.size / 2;
+    player.y = spawnPoint.y + gridSize / 2 - player.size / 2;
+    player.vx = 0;
+    player.vy = 0;
+    player.gravityX = 0;
+    player.gravityY = 0.2;
+  });
+
+  // Остановка тестового режима
+  btnStop.addEventListener('click', stopTestMode);
+</script>
+
+</body>
+</html>

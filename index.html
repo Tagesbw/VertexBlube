@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Космос — 4 синих куба и красные блоки</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      height: 100%;
+      background: black;
+      font-family: 'Segoe UI', sans-serif;
+    }
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 0;
+    }
+    .ui {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      align-items: center;
+    }
+    .btn {
+      padding: 15px 40px;
+      font-size: 24px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 2px solid white;
+      border-radius: 10px;
+      color: white;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      backdrop-filter: blur(10px);
+    }
+    .btn:hover {
+      background: white;
+      color: black;
+      transform: scale(1.05);
+    }
+  </style>
+</head>
+<body>
+
+<canvas id="bg"></canvas>
+
+<div class="ui">
+  <!-- Добавляем атрибут onclick для перенаправления -->
+  <button class="btn" onclick="window.location.href='game.html'">Играть</button>
+  <button class="btn" id="createBtn">Создать</button>
+  <button class="btn">Автор</button>
+</div>
+
+<script>
+  const canvas = document.getElementById("bg");
+  const ctx = canvas.getContext("2d");
+
+  // Фоновые звёзды
+  let stars = [];
+  const starCount = 300;
+
+  // Массив синих кубиков – будет 4 кубика
+  let blueCubes = [];
+  const blueCubeCount = 4; 
+
+  function createBlueCube() {
+    const baseSize = 30 + Math.random() * 30; // от 30 до 60
+    return {
+      x: 0,
+      y: 0,
+      dx: 0,
+      dy: 0,
+      fullSize: baseSize,
+      size: baseSize,
+      rotation: 0,
+      color: "rgba(150,220,255,1)",
+      dragging: false,
+      alive: true,
+      frozen: false,
+      fading: false,
+      fadingIn: false,
+      fadeFrame: 0
+    };
+  }
+
+  // Массив красных блоков (тетрис-формы)
+  let redBlocks = [];
+  const redBlockCount = 5;
+  const redCellSize = 30; // размер клетки
+  
+  const tetrisShapes = {
+    I: [ [-1.5, 0], [-0.5, 0], [0.5, 0], [1.5, 0] ],
+    O: [ [-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5] ],
+    T: [ [-1, 0], [0, 0], [1, 0], [0, -1] ],
+    L: [ [-1, 0], [0, 0], [1, 0], [1, -1] ],
+    S: [ [0, 0], [1, 0], [-1, -1], [0, -1] ]
+  };
+  
+  function createRedBlock() {
+    const shapeNames = Object.keys(tetrisShapes);
+    const shapeName = shapeNames[Math.floor(Math.random() * shapeNames.length)];
+    const cells = tetrisShapes[shapeName];
+    let maxDist = 0;
+    for (const cell of cells) {
+      const d = Math.sqrt(cell[0] * cell[0] + cell[1] * cell[1]);
+      if (d > maxDist) maxDist = d;
+    }
+    const collisionRadius = redCellSize * maxDist + redCellSize / 2;
+    return {
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      dx: (Math.random() - 0.5) * 0.2,
+      dy: (Math.random() - 0.5) * 0.2,
+      rotation: Math.random() * Math.PI,
+      rotationSpeed: (Math.random() - 0.5) * 0.02,
+      cells: cells,
+      cellSize: redCellSize,
+      collisionRadius: collisionRadius,
+      color: "rgba(255,60,60,0.9)"
+    };
+  }
+  
+  function createRedBlocks() {
+    redBlocks = [];
+    for (let i = 0; i < redBlockCount; i++) {
+      redBlocks.push(createRedBlock());
+    }
+  }
+  
+  function randomizeCubeSpawn(cube) {
+    const marginMin = 150;
+    const marginMax = 200;
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+    const edges = ["top", "bottom", "left", "right"];
+    const edge = edges[Math.floor(Math.random() * edges.length)];
+    if (edge === "top") {
+      cube.x = Math.random() * canvas.width;
+      cube.y = - (marginMin + Math.random() * (marginMax - marginMin));
+    } else if (edge === "bottom") {
+      cube.x = Math.random() * canvas.width;
+      cube.y = canvas.height + (marginMin + Math.random() * (marginMax - marginMin));
+    } else if (edge === "left") {
+      cube.x = - (marginMin + Math.random() * (marginMax - marginMin));
+      cube.y = Math.random() * canvas.height;
+    } else if (edge === "right") {
+      cube.x = canvas.width + (marginMin + Math.random() * (marginMax - marginMin));
+      cube.y = Math.random() * canvas.height;
+    }
+    let dx = centerX - cube.x;
+    let dy = centerY - cube.y;
+    let mag = Math.sqrt(dx * dx + dy * dy) || 1;
+    let speed = 0.5 + Math.random() * 0.5;
+    cube.dx = (dx / mag) * speed;
+    cube.dy = (dy / mag) * speed;
+    cube.rotation = Math.random() * Math.PI;
+    cube.fullSize = cube.fullSize;
+    cube.size = 0;
+    cube.color = "rgba(255,255,255,0)";
+    cube.alive = true;
+    cube.frozen = false;
+    cube.fading = false;
+    cube.fadingIn = true;
+    cube.fadeFrame = 0;
+  }
+  
+  function randomizeCubePosition(cube) {
+    cube.x = Math.random() * canvas.width;
+    cube.y = Math.random() * canvas.height;
+    cube.rotation = Math.random() * Math.PI;
+    cube.dx = (Math.random() - 0.5) * 1;
+    cube.dy = (Math.random() - 0.5) * 1;
+    cube.size = cube.fullSize;
+    cube.color = "rgba(150,220,255,1)";
+    cube.alive = true;
+    cube.frozen = false;
+    cube.fading = false;
+    cube.fadingIn = false;
+    cube.fadeFrame = 0;
+  }
+  
+  function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  window.addEventListener("resize", resizeCanvas);
+  resizeCanvas();
+  
+  function createStars() {
+    for (let i = 0; i < starCount; i++) {
+      stars.push({
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
+        radius: Math.random() * 1.5 + 0.5,
+        alpha: Math.random() * 0.5 + 0.5,
+        dx: (Math.random() - 0.5) * 0.3,
+        dy: (Math.random() - 0.5) * 0.3
+      });
+    }
+  }
+  
+  function checkCollisionCubeRed(cube, redObj) {
+    const dx = cube.x - redObj.x;
+    const dy = cube.y - redObj.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const cubeRadius = cube.fullSize / 2;
+    return (dist < cubeRadius + redObj.collisionRadius);
+  }
+  
+  function checkCollisionBlueCubes(cubeA, cubeB) {
+    return (
+      cubeA.x - cubeA.size/2 < cubeB.x + cubeB.size/2 &&
+      cubeA.x + cubeA.size/2 > cubeB.x - cubeB.size/2 &&
+      cubeA.y - cubeA.size/2 < cubeB.y + cubeB.size/2 &&
+      cubeA.y + cubeA.size/2 > cubeB.y - cubeB.size/2
+    );
+  }
+  
+  let mouseX = 0, mouseY = 0;
+  let lastMouseX = 0, lastMouseY = 0;
+  
+  canvas.addEventListener("mousedown", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    mouseX = e.clientX - rect.left;
+    mouseY = e.clientY - rect.top;
+    lastMouseX = mouseX;
+    lastMouseY = mouseY;
+    for (let cube of blueCubes) {
+      const dx = mouseX - cube.x;
+      const dy = mouseY - cube.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < cube.fullSize) {
+        cube.dragging = true;
+      }
+    }
+  });
+  
+  canvas.addEventListener("mousemove", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    lastMouseX = mouseX;
+    lastMouseY = mouseY;
+    mouseX = e.clientX - rect.left;
+    mouseY = e.clientY - rect.top;
+    for (let cube of blueCubes) {
+      if (cube.dragging && cube.alive && !cube.fading && !cube.fadingIn) {
+        cube.x += (mouseX - cube.x) * 0.1;
+        cube.y += (mouseY - cube.y) * 0.1;
+      }
+    }
+  });
+  
+  canvas.addEventListener("mouseup", () => {
+    for (let cube of blueCubes) {
+      if (cube.dragging && cube.alive && !cube.fading && !cube.fadingIn) {
+        const impulseX = mouseX - lastMouseX;
+        const impulseY = mouseY - lastMouseY;
+        cube.dx = impulseX * 0.5;
+        cube.dy = impulseY * 0.5;
+      }
+      cube.dragging = false;
+    }
+  });
+  
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    for (let star of stars) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.globalAlpha = star.alpha;
+      ctx.fillStyle = "white";
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = "white";
+      ctx.arc(star.x, star.y, star.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      star.x += star.dx;
+      star.y += star.dy;
+      if (star.x < 0) star.x = canvas.width;
+      if (star.x > canvas.width) star.x = 0;
+      if (star.y < 0) star.y = canvas.height;
+      if (star.y > canvas.height) star.y = 0;
+    }
+    
+    for (let i = 0; i < redBlocks.length; i++) {
+      for (let j = i + 1; j < redBlocks.length; j++) {
+        const rb1 = redBlocks[i];
+        const rb2 = redBlocks[j];
+        const dx = rb1.x - rb2.x;
+        const dy = rb1.y - rb2.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const minDist = rb1.collisionRadius + rb2.collisionRadius;
+        if (dist < minDist && dist > 0) {
+          const overlap = (minDist - dist) / 2;
+          const pushX = (dx / dist) * overlap;
+          const pushY = (dy / dist) * overlap;
+          rb1.x += pushX;
+          rb1.y += pushY;
+          rb2.x -= pushX;
+          rb2.y -= pushY;
+        }
+      }
+      ctx.save();
+      ctx.translate(redBlocks[i].x, redBlocks[i].y);
+      ctx.rotate(redBlocks[i].rotation);
+      ctx.fillStyle = redBlocks[i].color;
+      ctx.shadowBlur = 20;
+      ctx.shadowColor = redBlocks[i].color;
+      for (const cell of redBlocks[i].cells) {
+        const cellX = cell[0] * redBlocks[i].cellSize;
+        const cellY = cell[1] * redBlocks[i].cellSize;
+        ctx.fillRect(cellX - redBlocks[i].cellSize/2, cellY - redBlocks[i].cellSize/2, redBlocks[i].cellSize, redBlocks[i].cellSize);
+      }
+      ctx.restore();
+      redBlocks[i].x += redBlocks[i].dx;
+      redBlocks[i].y += redBlocks[i].dy;
+      redBlocks[i].rotation += redBlocks[i].rotationSpeed;
+      if (redBlocks[i].x < -50 || redBlocks[i].x > canvas.width+50 || redBlocks[i].y < -50 || redBlocks[i].y > canvas.height+50) {
+        redBlocks[i].x = Math.random() * canvas.width;
+        redBlocks[i].y = Math.random() * canvas.height;
+      }
+    }
+    
+    for (let i = 0; i < blueCubes.length; i++) {
+      for (let j = i + 1; j < blueCubes.length; j++) {
+        const cubeA = blueCubes[i];
+        const cubeB = blueCubes[j];
+        if (cubeA.alive && cubeB.alive && checkCollisionBlueCubes(cubeA, cubeB)) {
+          let dx = cubeA.x - cubeB.x;
+          let dy = cubeA.y - cubeB.y;
+          let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          let overlap = ((cubeA.size/2 + cubeB.size/2) - dist) / 2;
+          let pushX = (dx / dist) * overlap;
+          let pushY = (dy / dist) * overlap;
+          cubeA.x += pushX;
+          cubeA.y += pushY;
+          cubeB.x -= pushX;
+          cubeB.y -= pushY;
+        }
+      }
+    }
+    
+    for (let cube of blueCubes) {
+      if (cube.alive) {
+        if (!cube.dragging && !cube.fading && !cube.frozen && !cube.fadingIn) {
+          cube.x += cube.dx;
+          cube.y += cube.dy;
+        }
+        cube.rotation += 0.01;
+        if (
+          cube.x < -cube.fullSize || cube.x > canvas.width + cube.fullSize ||
+          cube.y < -cube.fullSize || cube.y > canvas.height + cube.fullSize
+        ) {
+          randomizeCubePosition(cube);
+        }
+        for (const rb of redBlocks) {
+          if (checkCollisionCubeRed(cube, rb) && !cube.fading && !cube.frozen && !cube.fadingIn) {
+            cube.fading = true;
+            cube.fadeFrame = 0;
+          }
+        }
+        if (cube.fading && !cube.frozen) {
+          cube.fadeFrame++;
+          const t = cube.fadeFrame / 30;
+          const newAlpha = 1 - t;
+          cube.color = `rgba(255,255,255,${newAlpha})`;
+          cube.size = cube.fullSize * (1 - t);
+          if (t >= 1) {
+            cube.alive = false;
+            setTimeout(() => { randomizeCubeSpawn(cube); }, 100);
+          }
+        }
+        if (cube.fadingIn) {
+          cube.fadeFrame++;
+          const t = cube.fadeFrame / 30;
+          const currentSize = cube.fullSize * t;
+          cube.size = currentSize;
+          const currentAlpha = t;
+          const r = Math.round(255 * (1 - t) + 150 * t);
+          const g = Math.round(255 * (1 - t) + 220 * t);
+          const b = 255;
+          cube.color = `rgba(${r},${g},${b},${currentAlpha})`;
+          if (t >= 1) {
+            cube.fadingIn = false;
+            cube.size = cube.fullSize;
+            cube.color = "rgba(150,220,255,1)";
+          }
+        }
+  
+        ctx.save();
+        ctx.translate(cube.x, cube.y);
+        ctx.rotate(cube.rotation);
+        ctx.fillStyle = cube.color;
+        ctx.shadowBlur = 25;
+        ctx.shadowColor = cube.color;
+        ctx.fillRect(-cube.size/2, -cube.size/2, cube.size, cube.size);
+        ctx.restore();
+      }
+    }
+    requestAnimationFrame(draw);
+  }
+  
+  document.getElementById("createBtn").addEventListener("click", () => {
+    window.location.href = "creator.html";
+  });
+  
+  resizeCanvas();
+  createStars();
+  createRedBlocks();
+  blueCubes = [];
+  for (let i = 0; i < blueCubeCount; i++) {
+    let cube = createBlueCube();
+    randomizeCubeSpawn(cube);
+    blueCubes.push(cube);
+  }
+  draw();
+</script>
+</body>
+</html>
